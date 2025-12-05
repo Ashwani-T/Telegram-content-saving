@@ -3,3 +3,4 @@ __pycache__
 myenv
 .env
 session.session
+*.db
