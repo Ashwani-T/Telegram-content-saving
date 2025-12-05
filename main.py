@@ -4,8 +4,6 @@ import asyncio
 from bot_listener import register_bot_media_handler
 from handlers.realtime_source_handler import register_source_handler
 from config import client
-from handlers.realtime_source_handler import *
-from bot_listener import *
 from handlers.bulk_forward_handler import bulk_forward
 
 async def main():

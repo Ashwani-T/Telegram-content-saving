@@ -8,7 +8,7 @@ from config import client, TARGET, resolve_target
 from db import was_forwarded, mark_forwarded
 
 async def upload_media(msg):
-    TARGETID=await resolve_target(TARGET)
+    TARGETID=await resolve_target(client,TARGET)
     caption = msg.text or ""
 
     filename = None
@@ -39,7 +39,7 @@ async def upload_media(msg):
     os.remove(path)
 
 async def forward_message(msg):
-    TARGETID=await resolve_target(TARGET)
+    TARGETID=await resolve_target(client,TARGET)
     """Main forward logic"""
     if was_forwarded(msg.chat_id, msg.id):
         return False
