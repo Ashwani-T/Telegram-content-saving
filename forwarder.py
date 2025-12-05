@@ -2,102 +2,119 @@
 
 import os
 import tempfile
+import platform
 from telethon import errors
-from telethon.tl.types import (
-    DocumentAttributeFilename,
-    DocumentAttributeVideo,
-    DocumentAttributeAudio,
-    DocumentAttributeSticker,
-)
+from telethon.tl.types import DocumentAttributeFilename
 
 from config import client, TARGET, resolve_target
 from db import was_forwarded, mark_forwarded
 
-
 # ---------------------------------------------------------
-# Extract proper filename + detect media attributes
+# MIME DETECTION: python-magic for Linux, fallback for Windows
 # ---------------------------------------------------------
-def extract_attributes(msg):
-    filename = None
-    is_video = False
-    supports_streaming = False
+USE_MAGIC = False
+if platform.system().lower() != "windows":
+    try:
+        import magic
+        USE_MAGIC = True
+        print("Using python-magic for MIME detection")
+    except Exception:
+        print("python-magic not found → using Telethon MIME fallback")
+else:
+    print("Windows detected → skipping python-magic")
 
-    attrs = getattr(msg.media, "document", None)
-    attributes = getattr(attrs, "attributes", []) if attrs else []
 
-    for attr in attributes:
-        if isinstance(attr, DocumentAttributeFilename):
-            filename = attr.file_name
-
-        elif isinstance(attr, DocumentAttributeVideo):
-            is_video = True
-            supports_streaming = True
-
-        elif isinstance(attr, DocumentAttributeAudio):
-            # audio files (mp3, voice, etc.)
+def detect_mime(path, msg):
+    """
+    MIME detection logic that works on both Linux & Windows.
+    """
+    # Linux: use python-magic
+    if USE_MAGIC:
+        try:
+            return magic.from_file(path, mime=True)
+        except:
             pass
 
-        elif isinstance(attr, DocumentAttributeSticker):
-            # stickers
-            pass
+    # Windows or fallback
+    if msg.file and msg.file.mime_type:
+        return msg.file.mime_type
 
-    # If filename is still None → fallback
-    if not filename:
-        ext = msg.file.ext or ""
-        filename = f"media_{msg.id}{ext}"
-
-    return filename, attributes, is_video, supports_streaming
+    return "application/octet-stream"
 
 
 # ---------------------------------------------------------
-# Upload any media with correct metadata
+# UPLOAD MEDIA (reupload bypass protected files)
 # ---------------------------------------------------------
 async def upload_media(msg):
-    TARGETID = await resolve_target(client, TARGET)
+    target = await resolve_target(client, TARGET)
 
     caption = msg.text or ""
 
-    # Extract filename and original attributes
-    filename, attributes, is_video, supports_streaming = extract_attributes(msg)
+    # Extract filename attribute properly
+    filename = None
+    for attr in getattr(msg.file, "attributes", []):
+        if isinstance(attr, DocumentAttributeFilename):
+            filename = attr.file_name
 
-    # Temporary file
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        temp_path = tmp.name
+    if not filename:
+        ext = msg.file.ext or ""
+        filename = f"file_{msg.id}{ext}"
 
-    # Fast download
-    await client.download_media(msg, file=temp_path)
+    # Download media to a temp file
+    with tempfile.NamedTemporaryFile(delete=False) as temp:
+        path = temp.name
 
-    # Upload using preserved metadata
-    await client.send_file(
-        TARGETID,
-        temp_path,
-        caption=caption,
-        file_name=filename,
-        mime_type=msg.file.mime_type,
-        attributes=attributes,
-        supports_streaming=supports_streaming  # ensures video uploads properly
-    )
+    await client.download_media(msg, file=path)
 
-    os.remove(temp_path)
+    # Detect MIME type
+    mime_type = detect_mime(path, msg)
+
+    # Preserve Telethon attributes (width, height, duration, etc.)
+    attrs = getattr(msg.media.document, "attributes", None)
+
+    try:
+        await client.send_file(
+            target,
+            path,
+            caption=caption,
+            attributes=attrs,
+            mime_type=mime_type,
+            file_name=filename
+        )
+    except errors.FloodWaitError as e:
+        print(f"FloodWait {e.seconds}s → retrying...")
+        await asyncio.sleep(e.seconds)
+        await client.send_file(
+            target,
+            path,
+            caption=caption,
+            attributes=attrs,
+            mime_type=mime_type,
+            file_name=filename
+        )
+
+    os.remove(path)
 
 
 # ---------------------------------------------------------
-# Forward wrapper
+# FORWARD MAIN ENTRY
 # ---------------------------------------------------------
 async def forward_message(msg):
-    TARGETID = await resolve_target(client, TARGET)
+    """
+    Main forward entry point. Handles:
+    - duplicate check
+    - text forwarding
+    - media forwarding (protected bypass)
+    """
+    target = await resolve_target(client, TARGET)
 
     if was_forwarded(msg.chat_id, msg.id):
         return False
 
-    try:
-        if msg.media:
-            await upload_media(msg)
-        else:
-            await client.send_message(TARGETID, msg.text or "")
-    except Exception as e:
-        print(f"[ERROR] Failed forwarding message {msg.id}: {e}")
-        return False
+    if msg.media:
+        await upload_media(msg)
+    else:
+        await client.send_message(target, msg.text or "")
 
     mark_forwarded(msg.chat_id, msg.id)
     return True
