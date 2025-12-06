@@ -2,109 +2,119 @@
 
 import os
 import tempfile
-import platform
-from telethon import errors
-from telethon.tl.types import DocumentAttributeFilename
+
+from telethon.tl import functions
+from telethon.tl.types import (
+    InputMediaUploadedPhoto,
+    InputMediaUploadedDocument,
+    DocumentAttributeFilename,
+    DocumentAttributeVideo,
+    DocumentAttributeAudio
+)
 
 from config import client, TARGET, resolve_target
 from db import was_forwarded, mark_forwarded
 
-# ---------------------------------------------------------
-# MIME DETECTION: python-magic for Linux, fallback for Windows
-# ---------------------------------------------------------
-USE_MAGIC = False
-if platform.system().lower() != "windows":
-    try:
-        import magic
-        USE_MAGIC = True
-        print("Using python-magic for MIME detection")
-    except Exception:
-        print("python-magic not found → using Telethon MIME fallback")
-else:
-    print("Windows detected → skipping python-magic")
-
-
-def detect_mime(path, msg):
-    """
-    MIME detection logic that works on both Linux & Windows.
-    """
-    # Linux: use python-magic
-    if USE_MAGIC:
-        try:
-            return magic.from_file(path, mime=True)
-        except:
-            pass
-
-    # Windows or fallback
-    if msg.file and msg.file.mime_type:
-        return msg.file.mime_type
-
-    return "application/octet-stream"
-
 
 # ---------------------------------------------------------
-# UPLOAD MEDIA (reupload bypass protected files)
+# UPLOAD MEDIA USING RAW TELEGRAM API (most reliable method)
 # ---------------------------------------------------------
 async def upload_media(msg):
-    target = await resolve_target(client, TARGET)
+    """
+    Re-uploads media using Telegram's Upload API.
+    Automatically preserves:
+    - photos
+    - videos
+    - gifs
+    - stickers
+    - audio / voice notes
+    - all document attributes
+    """
 
+    target = await resolve_target(client, TARGET)
     caption = msg.text or ""
 
-    # Extract filename attribute properly
-    filename = None
-    for attr in getattr(msg.file, "attributes", []):
-        if isinstance(attr, DocumentAttributeFilename):
-            filename = attr.file_name
+    # ------------------------------
+    # 1. Download original file
+    # ------------------------------
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        filepath = tmp.name
 
-    if not filename:
-        ext = msg.file.ext or ""
-        filename = f"file_{msg.id}{ext}"
+    await client.download_media(msg, file=filepath)
 
-    # Download media to a temp file
-    with tempfile.NamedTemporaryFile(delete=False) as temp:
-        path = temp.name
+    # ------------------------------
+    # 2. Extract original attributes
+    # ------------------------------
+    attributes = getattr(msg.media.document, "attributes", [])
+    mime = msg.file.mime_type if msg.file and msg.file.mime_type else "application/octet-stream"
 
-    await client.download_media(msg, file=path)
+    # ------------------------------
+    # 3. Upload binary file to Telegram
+    # ------------------------------
+    uploaded = await client.upload_file(filepath)
 
-    # Detect MIME type
-    mime_type = detect_mime(path, msg)
+    # ------------------------------
+    # 4. Detect correct media class
+    # ------------------------------
+    is_photo = hasattr(msg.media, "photo")
+    is_video = any(isinstance(a, DocumentAttributeVideo) for a in attributes)
+    is_audio = any(isinstance(a, DocumentAttributeAudio) for a in attributes)
 
-    # Preserve Telethon attributes (width, height, duration, etc.)
-    attrs = getattr(msg.media.document, "attributes", None)
+    # ------------------------------
+    # 5. Use correct wrapper for media type
+    # ------------------------------
+    if is_photo:
+        media = InputMediaUploadedPhoto(uploaded)
 
-    try:
-        await client.send_file(
-            target,
-            path,
-            caption=caption,
-            attributes=attrs,
-            mime_type=mime_type,
-            file_name=filename
-        )
-    except errors.FloodWaitError as e:
-        print(f"FloodWait {e.seconds}s → retrying...")
-        await asyncio.sleep(e.seconds)
-        await client.send_file(
-            target,
-            path,
-            caption=caption,
-            attributes=attrs,
-            mime_type=mime_type,
-            file_name=filename
+    elif is_video:
+        media = InputMediaUploadedDocument(
+            file=uploaded,
+            mime_type=mime,
+            attributes=attributes,
+            nosound_video=False
         )
 
-    os.remove(path)
+    elif is_audio:
+        media = InputMediaUploadedDocument(
+            file=uploaded,
+            mime_type=mime,
+            attributes=attributes
+        )
+
+    else:
+        # fallback → regular document, but still preserves attributes
+        media = InputMediaUploadedDocument(
+            file=uploaded,
+            mime_type=mime,
+            attributes=attributes
+        )
+
+    # ------------------------------
+    # 6. Send using Telegram API (SendMediaRequest)
+    # ------------------------------
+    await client(functions.messages.SendMediaRequest(
+        peer=target,
+        media=media,
+        message=caption
+    ))
+
+    # Cleanup temp file
+    os.remove(filepath)
+
+    return True
 
 
 # ---------------------------------------------------------
-# FORWARD MAIN ENTRY
+# FORWARD MAIN ENTRY (unchanged signature)
 # ---------------------------------------------------------
 async def forward_message(msg):
     """
     Main forward entry point. Handles:
-    - duplicate check
-    - text forwarding
-    - media forwarding (protected bypass)
+    - duplicate prevention
+    - correct media type forwarding
+    - text messages
+    
+    Wrapper stays exactly the same.
     """
     target = await resolve_target(client, TARGET)
 
