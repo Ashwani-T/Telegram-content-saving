@@ -12,7 +12,7 @@ from telethon.tl.types import (
     DocumentAttributeAudio
 )
 
-from config import client, TARGET, resolve_target
+from config import client, TARGET
 from db import was_forwarded, mark_forwarded
 
 
@@ -31,7 +31,7 @@ async def upload_media(msg):
     - all document attributes
     """
 
-    target = await resolve_target(client, TARGET)
+    #target = await resolve_target(client, TARGET)
     caption = msg.text or ""
 
     # ------------------------------
@@ -93,7 +93,7 @@ async def upload_media(msg):
     # 6. Send using Telegram API (SendMediaRequest)
     # ------------------------------
     await client(functions.messages.SendMediaRequest(
-        peer=target,
+        peer=TARGET,
         media=media,
         message=caption
     ))
@@ -116,7 +116,7 @@ async def forward_message(msg):
     
     Wrapper stays exactly the same.
     """
-    target = await resolve_target(client, TARGET)
+    #target = await resolve_target(client, TARGET)
 
     if was_forwarded(msg.chat_id, msg.id):
         return False
@@ -124,7 +124,7 @@ async def forward_message(msg):
     if msg.media:
         await upload_media(msg)
     else:
-        await client.send_message(target, msg.text or "")
+        await client.send_message(TARGET, msg.text or "")
 
     mark_forwarded(msg.chat_id, msg.id)
     return True
