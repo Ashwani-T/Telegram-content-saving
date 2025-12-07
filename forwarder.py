@@ -122,7 +122,8 @@ async def forward_message(msg):
         return False
 
     if msg.media:
-        await upload_media(msg)
+        if hasattr(msg.media,"document"):
+            await upload_media(msg)
     else:
         await client.send_message(TARGET, msg.text or "")
 
