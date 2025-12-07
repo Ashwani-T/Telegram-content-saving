@@ -11,7 +11,7 @@ async def main():
     print("Client started.")
     print(" Realtime mode")
         
-    await register_source_handler(client)
+    register_source_handler(client)
     register_bot_media_handler(client)
 
 

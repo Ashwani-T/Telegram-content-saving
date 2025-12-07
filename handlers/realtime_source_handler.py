@@ -4,7 +4,7 @@ from link_parser import extract_bot_links, extract_payload
 from bot_trigger import trigger_bot
 from config import BOT_USERNAME, SOURCE  # note new helper
 
-async def register_source_handler(client):
+def register_source_handler(client):
     # resolve SOURCE using the active running client (passed in)
     #ENTITY = await resolve_target(client, SOURCE)
 
